@@ -1,0 +1,10 @@
+#!/bin/sh
+
+# TODO: Auto path config
+NDK_PATH="/usr/local/Caskroom/android-ndk/17/android-ndk-r17"
+NDK_BIN_DIR="${NDK_PATH}/prebuilt/darwin-x86_64/bin"
+# TODO: Move to python script option
+APP_ABI="armeabi-v7a"
+
+NDK_PATH=${NDK_PATH} NDK_BIN_DIR=${NDK_BIN_DIR} APP_ABI=${APP_ABI} ${NDK_BIN_DIR}/python $(dirname $0)/ndk-gdb.py $@
+

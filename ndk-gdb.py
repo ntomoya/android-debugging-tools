@@ -32,7 +32,7 @@ import logging
 
 # Shared functions across gdbclient.py and ndk-gdb.py.
 # ndk-gdb is installed to $NDK/prebuilt/<platform>/bin
-NDK_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..'))
+NDK_PATH = os.environ["NDK_PATH"]
 sys.path.append(os.path.join(NDK_PATH, "python-packages"))
 import adb
 import gdbrunner
@@ -75,7 +75,7 @@ class ArgumentParser(gdbrunner.ArgumentParser):
             help="override the port used on the host")
 
         self.add_argument(
-            "--delay", type=float, default=0.25,
+            "--delay", type=float, default=1.0,
             help="delay in seconds to wait after starting activity.\n"
                  "defaults to 0.25, higher values may be needed on slower devices.")
 
@@ -111,6 +111,12 @@ class ArgumentParser(gdbrunner.ArgumentParser):
             "--nowait", action="store_true",
             help="do not wait for debugger to attach (may miss early JNI "
                  "breakpoints)")
+        
+        launch_only_group = self.add_argument_group("launch only options")
+        launch_only_group.add_argument(
+            "--jdb", action="store_true",
+            help="launch jdb and interact with it"
+        )
 
         if sys.platform.startswith("win"):
             tui_help = argparse.SUPPRESS
@@ -174,7 +180,7 @@ def extract_launchable(xmlroot):
 
 
 def ndk_bin_path():
-    return os.path.dirname(os.path.realpath(__file__))
+    return os.environ["NDK_BIN_DIR"]
 
 
 def handle_args():
@@ -304,13 +310,7 @@ def dump_var(args, variable, abi=None):
 
     if abi is not None:
         make_args.append("APP_ABI={}".format(abi))
-
-    with cd(args.project):
-        try:
-            make_output = subprocess.check_output(make_args, cwd=args.project)
-        except subprocess.CalledProcessError:
-            error("Failed to retrieve application ABI from Android.mk.")
-    return make_output.splitlines()[-1]
+    return os.environ["APP_ABI"]
 
 
 def get_api_level(device):
@@ -408,7 +408,7 @@ def abi_to_arch(abi):
 
 
 def get_gdbserver_path(args, package_name, app_data_dir, arch):
-    app_gdbserver_path = "{}/lib/gdbserver".format(app_data_dir)
+    app_gdbserver_path = "{}/{}-gdbserver".format(app_data_dir, arch)
     cmd = ["ls", app_gdbserver_path, "2>/dev/null"]
     cmd = get_run_as_cmd(package_name, cmd)
     (rc, _, _) = args.device.shell_nocheck(cmd)
@@ -645,6 +645,30 @@ def start_jdb(adb_path, serial, jdb_cmd, pid, verbose):
     else:
         log("error: did not find magic string in JDB output.")
 
+def start_jdb_only(args, pid):
+    adb_path = args.device.adb_path
+    serial = args.device.serial
+    jdb_cmd = args.jdb_cmd
+    verbose = bool(args.verbose)
+    device = adb.get_device(serial, adb_path=adb_path)
+
+    if verbose == "True":
+        enable_verbose_logging()
+
+    log("Starting jdb...")
+
+    jdb_port = 65534
+    device.forward("tcp:{}".format(jdb_port), "jdwp:{}".format(pid))
+    jdb_cmd = [jdb_cmd, "-connect",
+               "com.sun.jdi.SocketAttach:hostname=localhost,port={}".format(jdb_port)]
+
+    jdb = subprocess.Popen(jdb_cmd)
+    while jdb.returncode is None:
+        try:
+            jdb.communicate()
+        except KeyboardInterrupt:
+            jdb.kill()
+            exit(0)
 
 def main():
     if sys.argv[1:2] == ["--internal-wakeup-pid-with-jdb"]:
@@ -655,7 +679,7 @@ def main():
 
     if device is None:
         error("Could not find a unique connected device/emulator.")
-
+    
     # Warn on old Pixel C firmware (b/29381985). Newer devices may have Yama
     # enabled but still work with ndk-gdb (b/19277529).
     yama_check = device.shell_nocheck(["cat", "/proc/sys/kernel/yama/ptrace_scope", "2>/dev/null"])
@@ -739,6 +763,10 @@ def main():
         zygote_path = os.path.join(out_dir, "system", "bin", "app_process64")
     else:
         zygote_path = os.path.join(out_dir, "system", "bin", "app_process")
+
+    # Launch jdb only
+    if args.jdb:
+        return start_jdb_only(args, pid)
 
     # Start gdbserver.
     debug_socket = posixpath.join(app_data_dir, "debug_socket")
